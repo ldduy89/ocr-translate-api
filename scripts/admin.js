@@ -1,10 +1,10 @@
 // Quản trị bằng dòng lệnh. Người dùng phải đăng nhập ít nhất một lần thì mới có tài khoản.
 //   npm run admin -- show <email>
 //   npm run admin -- set-key <email> <gemini_key>
-//   npm run admin -- add-credits <email> <số_lượt> [lý_do]
+//   npm run admin -- add-credits <email> <số_lượt> [free|paid] [lý_do]   (mặc định paid = lượt đã mua)
 //   npm run admin -- create-key <email>     (tạo key Gemini mới trong dự án Google Cloud cố định)
 //   npm run admin -- delete-key <email>     (xoá key của user, kể cả bên Google nếu key do server tạo)
-import { getUserByEmail, getBalance, setGeminiKey, addCredits } from '../src/db.js';
+import { getUserByEmail, getBalances, setGeminiKey, addCredits } from '../src/db.js';
 import { createGeminiKey, deleteGeminiKey, keysEnabled } from '../src/gkeys.js';
 
 const [cmd, emailArg, arg, ...rest] = process.argv.slice(2);
@@ -21,7 +21,8 @@ if (!cmd || !email) fail('Cách dùng: show | set-key | add-credits | create-key
 if (!user) fail(`Chưa có tài khoản ${email}. Người này cần đăng nhập trong extension một lần trước.`);
 
 if (cmd === 'show') {
-  console.log({ email: user.email, name: user.name, credits: getBalance(user.id), gemini_key: mask(user.gemini_key), key_do_server_tao: !!user.gemini_key_name });
+  const b = getBalances(user.id);
+  console.log({ email: user.email, name: user.name, credits_free: b.free, credits_paid: b.paid, credits_total: b.total, gemini_key: mask(user.gemini_key), key_do_server_tao: !!user.gemini_key_name });
 } else if (cmd === 'set-key') {
   if (!arg) fail('Thiếu Gemini key');
   if (user.gemini_key_name) fail('User này đang dùng key do server tạo. Chạy delete-key trước để xoá key đó bên Google.');
@@ -30,8 +31,10 @@ if (cmd === 'show') {
 } else if (cmd === 'add-credits') {
   const n = Number(arg);
   if (!Number.isInteger(n) || n === 0) fail('Số lượt phải là số nguyên khác 0');
-  addCredits(user.id, n, rest.join(' ') || 'admin');
-  console.log(`Số lượt hiện tại của ${email}: ${getBalance(user.id)}`);
+  const pool = rest[0] === 'free' || rest[0] === 'paid' ? rest.shift() : 'paid';
+  addCredits(user.id, n, rest.join(' ') || 'admin', null, pool);
+  const b = getBalances(user.id);
+  console.log(`Đã cộng ${n} lượt ${pool === 'free' ? 'miễn phí' : 'đã mua'}. Hiện tại của ${email}: miễn phí ${b.free}, đã mua ${b.paid}, tổng ${b.total}`);
 } else if (cmd === 'create-key') {
   if (!keysEnabled()) fail('Chưa cấu hình GCP_PROJECT_ID và GCP_SA_JSON (hoặc GCP_SA_FILE).');
   if (user.gemini_key) fail('User này đã có key. Chạy delete-key trước nếu muốn tạo key mới.');

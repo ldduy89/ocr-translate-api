@@ -20,16 +20,24 @@ Cần Node.js 20.6 trở lên.
 |---|---|---|
 | GET | `/health` | Kiểm tra server sống |
 | POST | `/auth/google` | Body `{ "access_token": "..." }` (token từ `chrome.identity.getAuthToken`). Trả `{ token, user }` |
-| GET | `/me` | Header `Authorization: Bearer <token>`. Trả `{ email, name, credits, gemini_key }` |
-| POST | `/usage` | Body `{ "count": 1, "ref": "tuỳ chọn" }`. Trừ lượt; hết lượt trả 402. Cùng `ref` gọi lại không bị trừ hai lần |
-| POST | `/usage/refund` | Body `{ "ref": "...", "count": 1 }`. Hoàn lượt cho lần trừ có `ref` đó (mỗi `ref` hoàn một lần, không quá số đã trừ) |
+| GET | `/me` | Header `Authorization: Bearer <token>`. Trả `{ email, name, credits, credits_free, credits_paid, gemini_key }` (`credits` = tổng hai loại) |
+| POST | `/usage` | Body `{ "count": 1, "ref": "tuỳ chọn" }`. Trừ lượt (dùng lượt miễn phí trước, thiếu mới trừ lượt đã mua); hết lượt trả 402. Cùng `ref` gọi lại không bị trừ hai lần. Trả `{ credits, credits_free, credits_paid, duplicate }` |
+| POST | `/usage/refund` | Body `{ "ref": "...", "count": 1 }`. Hoàn lượt cho lần trừ có `ref` đó (mỗi `ref` hoàn một lần, không quá số đã trừ; hoàn lượt đã mua trước rồi tới lượt miễn phí) |
+
+## Hai loại lượt dịch
+
+Số lượt được tách thành **miễn phí** (`free`, tặng khi đăng ký, `FREE_CREDITS` trong `.env`) và **đã mua** (`paid`,
+admin cộng hoặc thanh toán). Bảng `credit_ledger` có cột `pool` ghi loại lượt. Khi dịch, server trừ lượt miễn phí
+trước, hết mới trừ lượt đã mua; khi hoàn thì trả ngược lại (đã mua trước). Bản database cũ tự thêm cột `pool`:
+lượt tặng và các lần dùng/hoàn tính vào miễn phí, lượt admin cộng tính vào đã mua.
 
 ## Quản trị (người dùng phải đăng nhập một lần trước)
 
 ```bash
 npm run admin -- show <email>
 npm run admin -- set-key <email> <gemini_key>
-npm run admin -- add-credits <email> 100 "tặng thêm"
+npm run admin -- add-credits <email> 100            # cộng vào lượt đã mua (mặc định)
+npm run admin -- add-credits <email> 20 free "tặng thêm"   # cộng vào lượt miễn phí
 ```
 
 ## Tạo Gemini key tự động

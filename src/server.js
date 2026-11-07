@@ -87,8 +87,9 @@ app.post(
   },
   async (req, reply) => {
     const r = consumeCredits(req.user.id, req.body.count, req.body.ref);
-    if (!r.ok) return reply.code(402).send({ error: 'insufficient_credits', credits: r.credits });
-    return { credits: r.credits, duplicate: r.duplicate };
+    const { ok, duplicate, ...balance } = r; // balance: credits, credits_free, credits_paid
+    if (!ok) return reply.code(402).send({ error: 'insufficient_credits', ...balance });
+    return { ...balance, duplicate };
   },
 );
 
@@ -110,8 +111,9 @@ app.post(
   },
   async (req, reply) => {
     const r = refundCredits(req.user.id, req.body.ref, req.body.count);
-    if (!r.ok) return reply.code(404).send({ error: r.error, credits: r.credits });
-    return { credits: r.credits, duplicate: r.duplicate };
+    const { ok, error, duplicate, ...balance } = r;
+    if (!ok) return reply.code(404).send({ error, ...balance });
+    return { ...balance, duplicate };
   },
 );
 
