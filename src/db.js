@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { config } from './config.js';
 
@@ -9,6 +9,10 @@ export const db = new Database(config.dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 db.pragma('busy_timeout = 5000');
+
+// Bản thử trước có bảng gcp_config một dòng (CHECK id = 1): đổi tên để tạo lại bảng nhiều dòng, rồi chép dữ liệu
+const oldGcp = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gcp_config'").get();
+if (oldGcp && oldGcp.sql.includes('CHECK (id = 1)')) db.exec('ALTER TABLE gcp_config RENAME TO gcp_config_v1');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -31,6 +35,26 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
   created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_user ON credit_ledger(user_id);
+
+-- Mỗi dòng là một project Google Cloud kèm service account để tạo key
+CREATE TABLE IF NOT EXISTS gcp_config (
+  id            INTEGER PRIMARY KEY,
+  gcpProjectId  TEXT NOT NULL UNIQUE,
+  gcpSaJson     TEXT NOT NULL,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Bản sao của mỗi key Gemini do server tạo, liên kết với project đã tạo ra nó
+CREATE TABLE IF NOT EXISTS gcp_keys (
+  id             INTEGER PRIMARY KEY,
+  gcp_config_id  INTEGER NOT NULL REFERENCES gcp_config(id),
+  user_id        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  key_name       TEXT NOT NULL UNIQUE,
+  key_string     TEXT NOT NULL,
+  created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_gcp_keys_config ON gcp_keys(gcp_config_id);
 `);
 
 // Bản cũ chưa tách lượt miễn phí / đã mua: thêm cột pool. Lượt tặng và các lần dùng/hoàn tính vào
@@ -46,6 +70,59 @@ db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_ref_pool ON credit_ledger(
 // Bản cũ chưa có cột lưu tên key bên Google (dùng để xoá key khi cần)
 if (!db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'gemini_key_name')) {
   db.exec('ALTER TABLE users ADD COLUMN gemini_key_name TEXT');
+}
+
+// ---------- Nhiều project Google Cloud ----------
+const gcpQ = {
+  all: db.prepare('SELECT id, gcpProjectId, gcpSaJson, enabled FROM gcp_config ORDER BY id'),
+  byId: db.prepare('SELECT id, gcpProjectId, gcpSaJson, enabled FROM gcp_config WHERE id = ?'),
+  add: db.prepare('INSERT INTO gcp_config (gcpProjectId, gcpSaJson) VALUES (?, ?)'),
+  setEnabled: db.prepare('UPDATE gcp_config SET enabled = ? WHERE id = ?'),
+  remove: db.prepare('DELETE FROM gcp_config WHERE id = ?'),
+  // Project đang bật, ít key nhất lên trước (đếm các key server đã tạo trong project đó)
+  candidates: db.prepare(`
+    SELECT c.id, c.gcpProjectId, c.gcpSaJson, COUNT(k.id) AS keys
+    FROM gcp_config c LEFT JOIN gcp_keys k ON k.gcp_config_id = c.id
+    WHERE c.enabled = 1
+    GROUP BY c.id
+    ORDER BY keys ASC, c.id ASC`),
+  keyCount: db.prepare('SELECT COUNT(*) AS n FROM gcp_keys WHERE gcp_config_id = ?'),
+  insertKey: db.prepare('INSERT INTO gcp_keys (gcp_config_id, user_id, key_name, key_string) VALUES (?, ?, ?, ?)'),
+  keyByUser: db.prepare(`
+    SELECT k.key_name, k.gcp_config_id, c.gcpProjectId, c.gcpSaJson
+    FROM gcp_keys k JOIN gcp_config c ON c.id = k.gcp_config_id
+    WHERE k.user_id = ? ORDER BY k.id DESC LIMIT 1`),
+  deleteKeyByName: db.prepare('DELETE FROM gcp_keys WHERE key_name = ?'),
+};
+
+export const listGcpConfigs = () =>
+  gcpQ.all.all().map((c) => ({ ...c, enabled: !!c.enabled, keys: gcpQ.keyCount.get(c.id).n }));
+export const getGcpConfigById = (id) => gcpQ.byId.get(id);
+// Thêm project mới. Ném lỗi nếu project_id đã có (UNIQUE).
+export const addGcpConfig = (projectId, saJson) => gcpQ.add.run(projectId, saJson).lastInsertRowid;
+export const setGcpEnabled = (id, enabled) => gcpQ.setEnabled.run(enabled ? 1 : 0, id);
+// Xoá project. Nếu còn key liên kết thì khoá ngoại chặn lại (dùng gcpKeyCount để báo trước).
+export const removeGcpConfig = (id) => gcpQ.remove.run(id);
+export const gcpKeyCount = (id) => gcpQ.keyCount.get(id).n;
+// Danh sách project đang bật, ít key nhất trước
+export const gcpCandidates = () => gcpQ.candidates.all();
+// Key do server tạo của một user (kèm project và service account đã tạo ra nó), nếu có
+export const gcpKeyOfUser = (userId) => gcpQ.keyByUser.get(userId) || null;
+export const deleteGcpKeyRecord = (keyName) => gcpQ.deleteKeyByName.run(keyName);
+
+// Lần đầu có bảng gcp_config nhiều dòng (user_version = 0): chép dữ liệu bảng cũ (nếu có) và cấu hình từ .env.
+// Chạy đúng một lần, sau đó user_version = 1.
+if (db.pragma('user_version', { simple: true }) < 1) {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gcp_config_v1'").get()) {
+    db.exec('INSERT OR IGNORE INTO gcp_config (gcpProjectId, gcpSaJson) SELECT gcpProjectId, gcpSaJson FROM gcp_config_v1 WHERE gcpProjectId IS NOT NULL AND gcpSaJson IS NOT NULL');
+    db.exec('DROP TABLE gcp_config_v1');
+  }
+  let saJson = config.gcpImportServiceAccountJson;
+  if (!saJson && config.gcpImportServiceAccountFile) saJson = readFileSync(config.gcpImportServiceAccountFile, 'utf8');
+  if (config.gcpImportProjectId && saJson) {
+    db.prepare('INSERT OR IGNORE INTO gcp_config (gcpProjectId, gcpSaJson) VALUES (?, ?)').run(config.gcpImportProjectId, saJson.trim());
+  }
+  db.pragma('user_version = 1');
 }
 
 const q = {
@@ -76,7 +153,14 @@ const pack = (b) => ({ credits: b.total, credits_free: b.free, credits_paid: b.p
 // name: tên key trên Google Cloud (chỉ có khi key do server tạo); gán tay thì để null
 export const setGeminiKey = (userId, key, name = null) => q.setKey.run(key || null, key ? name : null, userId);
 // Chỉ ghi nếu user chưa có key (tránh hai yêu cầu cùng lúc tạo hai key). Trả về true nếu ghi được.
-export const claimGeminiKey = (userId, key, name) => q.claimKey.run(key, name, userId).changes > 0;
+// Gắn key cho user (chỉ khi user chưa có key) và lưu bản sao trong gcp_keys, cùng một giao dịch.
+// Trả về true nếu gắn được.
+const claimTx = db.transaction((userId, key, name, gcpConfigId) => {
+  const changed = q.claimKey.run(key, name, userId).changes > 0;
+  if (changed) gcpQ.insertKey.run(gcpConfigId, userId, name, key);
+  return changed;
+});
+export const claimGeminiKey = (userId, key, name, gcpConfigId) => claimTx(userId, key, name, gcpConfigId);
 
 // Đăng nhập: tạo user mới (tặng lượt miễn phí) hoặc cập nhật tên/email
 const upsertTx = db.transaction(({ sub, email, name }) => {

@@ -19,10 +19,11 @@ export const config = {
   sessionDays: Number(env.SESSION_DAYS || 30),
   freeCredits: Number(env.FREE_CREDITS ?? 20),
   blockedCountries: new Set(blocked.split(',').map((c) => c.trim().toUpperCase()).filter(Boolean)),
+  // Cấu hình Google Cloud (GCP_PROJECT_ID, GCP_SA_JSON) giờ lưu trong database, quản lý bằng lệnh admin gcp-*.
+  // Hai biến dưới đây chỉ dùng MỘT LẦN để chuyển cấu hình cũ từ .env vào database (xem db.js).
+  gcpImportProjectId: env.GCP_PROJECT_ID || '',
+  gcpImportServiceAccountJson: env.GCP_SA_JSON || '',
+  gcpImportServiceAccountFile: env.GCP_SA_FILE || '',
   // Header chứa mã quốc gia của người gọi (Cloudflare tự thêm CF-IPCountry khi domain đi qua Cloudflare)
-  // Tạo Gemini key cho từng user trong một dự án Google Cloud cố định (bỏ trống thì tắt, gán key thủ công bằng admin)
-  gcpProjectId: env.GCP_PROJECT_ID || '',
-  gcpServiceAccountJson: env.GCP_SA_JSON || '',
-  gcpServiceAccountFile: env.GCP_SA_FILE || '',
   countryHeader: (env.COUNTRY_HEADER || 'cf-ipcountry').toLowerCase(),
 };

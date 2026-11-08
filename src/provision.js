@@ -15,9 +15,9 @@ export function provisionKey(userId, log) {
 
   const p = (async () => {
     try {
-      const { name, keyString } = await createGeminiKey(userId);
-      if (!claimGeminiKey(userId, keyString, name)) {
-        await deleteGeminiKey(name).catch(() => {}); // user đã có key do yêu cầu khác: bỏ key thừa
+      const { name, keyString, cfg } = await createGeminiKey(userId);
+      if (!claimGeminiKey(userId, keyString, name, cfg.id)) {
+        await deleteGeminiKey(name, cfg).catch(() => {}); // user đã có key do yêu cầu khác: bỏ key thừa
       }
     } catch (err) {
       cooldown.set(userId, Date.now() + 60_000);

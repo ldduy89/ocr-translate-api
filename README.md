@@ -42,21 +42,40 @@ npm run admin -- add-credits <email> 20 free "tặng thêm"   # cộng vào lư�
 
 ## Tạo Gemini key tự động
 
-Khi user đăng nhập mà chưa có key, server tạo một key trong dự án Google Cloud cố định (`GCP_PROJECT_ID`) bằng
-service account, giới hạn chỉ dùng cho Generative Language API, rồi lưu vào tài khoản. Đăng nhập lần đầu đợi tối đa
-8 giây; nếu chưa xong hoặc lỗi thì `/me` tự thử lại (cách nhau 60 giây). Nếu không cấu hình `GCP_*` thì tính năng
-tắt và bạn gán key thủ công bằng `set-key`.
+Khi user đăng nhập mà chưa có key, server tạo một key Gemini bằng service account của một project Google Cloud, giới hạn
+chỉ dùng cho Generative Language API, rồi lưu vào tài khoản. Có thể cấu hình nhiều project: mỗi lần tạo key, server chọn
+project đang bật có **ít key nhất**; nếu project đó lỗi (hết hạn mức, lỗi quyền...) thì thử project kế tiếp.
+Đăng nhập lần đầu đợi tối đa 8 giây; nếu chưa xong hoặc lỗi thì `/me` tự thử lại (cách nhau 60 giây).
+Nếu chưa có project nào đang bật thì tính năng tắt và bạn gán key thủ công bằng `set-key`.
 
-Chuẩn bị một lần: bật API Keys API và Generative Language API trong dự án; tạo service account, cấp vai trò
-"API Keys Admin"; tạo khoá JSON; điền `GCP_PROJECT_ID` và `GCP_SA_JSON` (hoặc `GCP_SA_FILE`) vào `.env`.
-Không đưa file khoá lên GitHub.
+Chuẩn bị cho mỗi project: bật API Keys API và Generative Language API; tạo service account, cấp vai trò
+"API Keys Admin"; tạo khoá JSON. Thêm vào server:
 
 ```bash
-npm run admin -- create-key <email>   # tạo thủ công cho một user
-npm run admin -- delete-key <email>   # xoá key (bên Google nếu key do server tạo)
+npm run admin -- gcp-add <project_id> <file_khoá.json>
+npm run admin -- gcp-list                 # xem id, project, trạng thái, số key đã tạo trong từng project
+npm run admin -- gcp-disable <id>         # ngừng tạo key mới ở project này (key cũ vẫn dùng được)
+npm run admin -- gcp-enable <id>
+npm run admin -- gcp-remove <id>          # chỉ khi project không còn key nào
 ```
 
-Lưu ý: mọi key trong cùng dự án dùng chung hạn mức và hoá đơn; một dự án cũng có giới hạn số key.
+Dữ liệu nằm trong database:
+
+- Bảng `gcp_config`: mỗi dòng là một project (`gcpProjectId`, `gcpSaJson`, `enabled`).
+- Bảng `gcp_keys`: bản sao của mỗi key do server tạo, liên kết với dòng project đã tạo ra nó (`gcp_config_id`) và với user.
+  Số dòng trong `gcp_keys` của một project chính là số key đang dùng để chọn project ít key nhất.
+
+Lần chạy đầu tiên, nếu `.env` còn `GCP_PROJECT_ID` / `GCP_SA_JSON` (hoặc `GCP_SA_FILE`), server thêm project đó vào
+`gcp_config` đúng một lần. Sau đó có thể xoá các biến này khỏi `.env`. Xoá file khoá JSON khỏi thư mục dự án sau khi
+đã lưu, và không đưa file này lên GitHub.
+
+```bash
+npm run admin -- create-key <email>   # tạo thủ công cho một user (chọn project như tự động)
+npm run admin -- delete-key <email>   # xoá key bên Google bằng đúng project đã tạo ra nó
+```
+
+Lưu ý: mọi key trong cùng một project dùng chung hạn mức và hoá đơn. Service account JSON được lưu dạng chữ thường trong
+database (giống Gemini key), nên bảo vệ file `app.db` như bí mật.
 
 ## Chặn khu vực
 
