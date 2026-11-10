@@ -65,9 +65,18 @@ app.post(
 );
 
 // Thông tin tài khoản: số lượt còn lại và Gemini key của user
+// Hết lượt mà còn key thì xoá key (Google và DB) rồi trả về không có key. Xoá Google lỗi thì DB giữ nguyên
+// để lần gọi /me sau thử lại, nhưng phản hồi vẫn không đưa key cho client.
 app.get('/me', { preHandler: requireUser }, async (req) => {
+  const fresh = getUserById(req.user.id) || req.user;
+  if (fresh.gemini_key && getBalances(fresh.id).total <= 0) {
+    const revoked = await revokeKey(fresh.id, req.log).catch(() => false);
+    const out = publicUser(getUserById(fresh.id) || fresh);
+    if (!revoked) out.gemini_key = null;
+    return out;
+  }
   provisionKey(req.user.id, app.log); // chưa có key (lần tạo trước lỗi hoặc còn đang chạy) thì thử tạo, không đợi
-  return publicUser(req.user);
+  return publicUser(fresh);
 });
 
 // So sánh token quản trị an toàn (băm rồi so để không lộ thông tin qua thời gian phản hồi)
@@ -247,10 +256,8 @@ app.post(
   async (req, reply) => {
     const r = consumeCredits(req.user.id, req.body.count, req.body.ref);
     const { ok, duplicate, ...balance } = r; // balance: credits, credits_free, credits_paid
-    // Không đủ lượt: trả 402. Nếu đã hết hẳn thì xoá key Gemini (DB và Google).
-    // Không xoá khi vừa trừ xong lượt cuối: lô đó vẫn cần key để dịch.
+    // Không đủ lượt: trả 402. Việc xoá key khi hết lượt do /me đảm nhiệm (không xoá ở đây).
     if (!ok) {
-      if (balance.credits === 0) revokeKey(req.user.id, req.log).catch(() => {});
       return reply.code(402).send({ error: 'insufficient_credits', ...balance });
     }
     return { ...balance, duplicate };
