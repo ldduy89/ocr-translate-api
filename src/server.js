@@ -196,10 +196,12 @@ app.post(
       body: {
         type: 'object',
         required: ['count'],
-        oneOf: [{ required: ['email'] }, { required: ['user_id'] }],
+        // Cần ít nhất một trong: email, user_id, id. Có nhiều thì ưu tiên id (user_id/id), rồi mới đến email.
+        anyOf: [{ required: ['email'] }, { required: ['user_id'] }, { required: ['id'] }],
         properties: {
           email: { type: 'string', minLength: 3, maxLength: 320 },
           user_id: { type: 'integer', minimum: 1 },
+          id: { type: 'integer', minimum: 1 },
           count: { type: 'integer', minimum: 1, maximum: 100000 },
           pool: { type: 'string', enum: ['paid', 'free'] },
           reason: { type: 'string', maxLength: 200 },
@@ -209,8 +211,9 @@ app.post(
     },
   },
   async (req, reply) => {
-    const { email, user_id, count, pool = 'paid', reason = 'admin', ref } = req.body;
-    const user = user_id ? getUserById(user_id) : getUserByEmail(String(email).toLowerCase());
+    const { email, user_id, id, count, pool = 'paid', reason = 'admin', ref } = req.body;
+    const targetId = user_id ?? id;
+    const user = targetId ? getUserById(targetId) : getUserByEmail(String(email).toLowerCase());
     if (!user) return reply.code(404).send({ error: 'user_not_found' });
 
     const { duplicate } = addCreditsOnce(user.id, count, reason, ref ?? null, pool);
