@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+secrets
+key.pem
+data
+data.txt
+__MACOSX
+*.db
+*.db-*
+.git
+.gitignore
+README.md
