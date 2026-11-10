@@ -12,10 +12,6 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY scripts ./scripts
 
-# Thư mục dữ liệu SQLite: Railway sẽ mount volume vào /data
-RUN mkdir -p /data && chown -R node:node /data /app
-
-USER node
-
-# Railway cấp PORT qua biến môi trường; server đã đọc từ config.js
+# Chạy bằng root: volume của Railway được mount với quyền root, user "node" không ghi được /data
+# (gây lỗi SQLITE_CANTOPEN). Ứng dụng nhỏ, một container, nên chấp nhận được.
 CMD ["node", "src/server.js"]
