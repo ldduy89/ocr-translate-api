@@ -12,6 +12,6 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY scripts ./scripts
 
-# Chạy bằng root: volume của Railway được mount với quyền root, user "node" không ghi được /data
-# (gây lỗi SQLITE_CANTOPEN). Ứng dụng nhỏ, một container, nên chấp nhận được.
+# Chạy bằng root: volume của Railway được mount với quyền root,
+# user "node" không ghi được /data (gây lỗi SQLITE_CANTOPEN)
 CMD ["node", "src/server.js"]
