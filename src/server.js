@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { signSession, verifySession, verifyGoogleAccessToken } from './auth.js';
 import { blockedCountry } from './region.js';
 import { provisionKey, revokeKey } from './provision.js';
-import { upsertUser, getUserById, getUserByEmail, getBalances, consumeCredits, refundCredits, addCreditsOnce, publicUser } from './db.js';
+import { upsertUser, getUserById, getUserByEmail, getBalances, consumeCredits, refundCredits, addCreditsOnce, publicUser, listGcpConfigs, getGcpConfigById, addGcpConfig, setGcpEnabled, removeGcpConfig, gcpKeyCount } from './db.js';
 
 if (!config.googleClientId) {
   console.error('Thiếu GOOGLE_CLIENT_ID');
@@ -90,6 +90,101 @@ async function requireAdmin(req, reply) {
   }
   if (!adminTokenOk(req.headers['x-admin-token'])) return reply.code(401).send({ error: 'unauthorized' });
 }
+
+// ---------- Quản lý project Google Cloud (service account) ----------
+// Chỉ admin. Không bao giờ trả về private_key hay toàn bộ JSON.
+function parseSaJson(input) {
+  let raw = input;
+  if (typeof raw === 'object' && raw !== null) raw = JSON.stringify(raw);
+  if (typeof raw !== 'string') return null;
+  raw = raw.trim();
+  if (!raw.startsWith('{')) raw = Buffer.from(raw, 'base64').toString('utf8'); // cho phép dán base64
+  let sa;
+  try { sa = JSON.parse(raw); } catch { return null; }
+  if (!sa || typeof sa.client_email !== 'string' || typeof sa.private_key !== 'string') return null;
+  return { raw: JSON.stringify(sa), client_email: sa.client_email, project_id: sa.project_id || null };
+}
+
+function gcpView(c) {
+  let client_email = null;
+  const parsed = parseSaJson(c.gcpSaJson);
+  if (parsed) client_email = parsed.client_email;
+  return { id: c.id, project_id: c.gcpProjectId, enabled: c.enabled, keys: gcpKeyCount(c.id), service_account: client_email };
+}
+
+// Danh sách project
+app.get('/admin/gcp', { preHandler: requireAdmin }, async () => ({
+  projects: listGcpConfigs().map(gcpView),
+}));
+
+// Thêm project + service account
+app.post(
+  '/admin/gcp',
+  {
+    preHandler: requireAdmin,
+    schema: {
+      body: {
+        type: 'object',
+        required: ['project_id', 'service_account'],
+        properties: {
+          project_id: { type: 'string', minLength: 3, maxLength: 100, pattern: '^[a-z][a-z0-9-]{4,}[a-z0-9]$' },
+          service_account: {}, // object JSON, chuỗi JSON hoặc base64 (lưu vào cột gcpSaJson)
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { project_id } = req.body;
+    const parsed = parseSaJson(req.body.service_account); // lưu vào cột gcpSaJson (dạng chuỗi JSON chuẩn)
+    if (!parsed && req.body.service_account === undefined) return reply.code(400).send({ error: 'missing_service_account' });
+    if (!parsed) return reply.code(400).send({ error: 'invalid_service_account', message: 'JSON service account thiếu client_email hoặc private_key' });
+    if (parsed.project_id && parsed.project_id !== project_id) {
+      return reply.code(400).send({ error: 'project_mismatch', message: `service account thuộc project ${parsed.project_id}, không khớp ${project_id}` });
+    }
+    try {
+      const id = addGcpConfig(project_id, parsed.raw);
+      return reply.code(201).send(gcpView(getGcpConfigById(Number(id))));
+    } catch (err) {
+      if (String(err.message).includes('UNIQUE')) return reply.code(409).send({ error: 'project_exists' });
+      throw err;
+    }
+  },
+);
+
+// Bật/tắt project (tắt = không tạo key mới ở project này)
+app.patch(
+  '/admin/gcp/:id',
+  {
+    preHandler: requireAdmin,
+    schema: {
+      params: { type: 'object', properties: { id: { type: 'integer', minimum: 1 } }, required: ['id'] },
+      body: { type: 'object', required: ['enabled'], properties: { enabled: { type: 'boolean' } } },
+    },
+  },
+  async (req, reply) => {
+    const c = getGcpConfigById(req.params.id);
+    if (!c) return reply.code(404).send({ error: 'not_found' });
+    setGcpEnabled(c.id, req.body.enabled);
+    return gcpView(getGcpConfigById(c.id));
+  },
+);
+
+// Xoá project. Chỉ xoá khi project không còn key nào (tránh mất liên kết với key đang dùng).
+app.delete(
+  '/admin/gcp/:id',
+  {
+    preHandler: requireAdmin,
+    schema: { params: { type: 'object', properties: { id: { type: 'integer', minimum: 1 } }, required: ['id'] } },
+  },
+  async (req, reply) => {
+    const c = getGcpConfigById(req.params.id);
+    if (!c) return reply.code(404).send({ error: 'not_found' });
+    const n = gcpKeyCount(c.id);
+    if (n > 0) return reply.code(409).send({ error: 'project_has_keys', keys: n, message: 'Tắt project (enabled=false) thay vì xoá' });
+    removeGcpConfig(c.id);
+    return { deleted: true, id: c.id };
+  },
+);
 
 // Thêm lượt dịch cho user (dùng khi khách đã thanh toán). Nếu user chưa có key Gemini thì tạo key ngay.
 // Gọi lại với cùng ref sẽ không cộng thêm lượt.
