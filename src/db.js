@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
   email       TEXT NOT NULL,
   name        TEXT,
   gemini_key  TEXT,
+  role        TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
   created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -112,6 +113,9 @@ export const deleteGcpKeyRecord = (keyName) => gcpQ.deleteKeyByName.run(keyName)
 
 // Lần đầu có bảng gcp_config nhiều dòng (user_version = 0): chép dữ liệu bảng cũ (nếu có) và cấu hình từ .env.
 // Chạy đúng một lần, sau đó user_version = 1.
+if (!db.prepare("SELECT 1 FROM pragma_table_info('users') WHERE name = 'role'").get()) {
+  db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+}
 if (db.pragma('user_version', { simple: true }) < 1) {
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gcp_config_v1'").get()) {
     db.exec('INSERT OR IGNORE INTO gcp_config (gcpProjectId, gcpSaJson) SELECT gcpProjectId, gcpSaJson FROM gcp_config_v1 WHERE gcpProjectId IS NOT NULL AND gcpSaJson IS NOT NULL');
@@ -129,7 +133,8 @@ const q = {
   userBySub: db.prepare('SELECT * FROM users WHERE google_sub = ?'),
   userById: db.prepare('SELECT * FROM users WHERE id = ?'),
   userByEmail: db.prepare('SELECT * FROM users WHERE email = ?'),
-  insertUser: db.prepare('INSERT INTO users (google_sub, email, name) VALUES (?, ?, ?)'),
+  insertUser: db.prepare('INSERT INTO users (id, google_sub, email, name) VALUES (?, ?, ?, ?)'),
+  maxUserId: db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM users'),
   updateUser: db.prepare('UPDATE users SET email = ?, name = ? WHERE id = ?'),
   setKey: db.prepare('UPDATE users SET gemini_key = ?, gemini_key_name = ? WHERE id = ?'),
   claimKey: db.prepare('UPDATE users SET gemini_key = ?, gemini_key_name = ? WHERE id = ? AND gemini_key IS NULL'),
@@ -163,15 +168,18 @@ const claimTx = db.transaction((userId, key, name, gcpConfigId) => {
 export const claimGeminiKey = (userId, key, name, gcpConfigId) => claimTx(userId, key, name, gcpConfigId);
 
 // Đăng nhập: tạo user mới (tặng lượt miễn phí) hoặc cập nhật tên/email
+const USER_ID_START = 120435;
 const upsertTx = db.transaction(({ sub, email, name }) => {
   const existing = q.userBySub.get(sub);
   if (existing) {
     q.updateUser.run(email, name ?? existing.name, existing.id);
     return q.userById.get(existing.id);
   }
-  const { lastInsertRowid } = q.insertUser.run(sub, email, name ?? null);
-  if (config.freeCredits > 0) q.insertLedger.run(lastInsertRowid, config.freeCredits, 'signup', null, 'free');
-  return q.userById.get(lastInsertRowid);
+  // ID user bắt đầu từ USER_ID_START (120435); user cũ giữ nguyên ID, user mới lấy số lớn hơn ID lớn nhất hiện có
+  const id = Math.max(q.maxUserId.get().m + 1, USER_ID_START);
+  q.insertUser.run(id, sub, email, name ?? null);
+  if (config.freeCredits > 0) q.insertLedger.run(id, config.freeCredits, 'signup', null, 'free');
+  return q.userById.get(id);
 });
 export const upsertUser = (info) => upsertTx(info);
 
@@ -224,10 +232,24 @@ export function addCredits(userId, n, reason = 'admin', ref = null, pool = 'paid
   return addTx.immediate(userId, n, reason, ref, pool);
 }
 
+// Cộng lượt, nhưng nếu ref đã được cộng trước đó thì bỏ qua (gọi lại an toàn)
+export function addCreditsOnce(userId, n, reason = 'admin', ref = null, pool = 'paid') {
+  if (ref && q.ledgerByRef.get(userId, ref)) return { duplicate: true };
+  addCredits(userId, n, reason, ref, pool);
+  return { duplicate: false };
+}
+
+export const setUserRole = (userId, role) => {
+  if (role !== 'user' && role !== 'admin') throw new Error("role phải là 'user' hoặc 'admin'");
+  return db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, userId);
+};
+
 export function publicUser(u) {
   return {
+    id: u.id,
     email: u.email,
     name: u.name,
+    role: u.role || 'user',
     ...pack(getBalances(u.id)),
     gemini_key: u.gemini_key || null,
   };

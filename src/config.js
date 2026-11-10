@@ -16,6 +16,7 @@ export const config = {
   dbPath: env.DB_PATH || './data/app.db',
   googleClientId: env.GOOGLE_CLIENT_ID || '',
   sessionSecret: env.SESSION_SECRET || '',
+  adminToken: env.ADMIN_TOKEN || '', // token dự phòng cho /admin/* khi không có phiên Bearer (header x-admin-token)
   sessionDays: Number(env.SESSION_DAYS || 30),
   freeCredits: Number(env.FREE_CREDITS ?? 20),
   blockedCountries: new Set(blocked.split(',').map((c) => c.trim().toUpperCase()).filter(Boolean)),

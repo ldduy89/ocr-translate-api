@@ -1,9 +1,10 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
 import { config } from './config.js';
 import { signSession, verifySession, verifyGoogleAccessToken } from './auth.js';
 import { blockedCountry } from './region.js';
-import { provisionKey } from './provision.js';
-import { upsertUser, getUserById, consumeCredits, refundCredits, publicUser } from './db.js';
+import { provisionKey, revokeKey } from './provision.js';
+import { upsertUser, getUserById, getUserByEmail, getBalances, consumeCredits, refundCredits, addCreditsOnce, publicUser } from './db.js';
 
 if (!config.googleClientId) {
   console.error('Thiếu GOOGLE_CLIENT_ID');
@@ -69,6 +70,66 @@ app.get('/me', { preHandler: requireUser }, async (req) => {
   return publicUser(req.user);
 });
 
+// So sánh token quản trị an toàn (băm rồi so để không lộ thông tin qua thời gian phản hồi)
+function adminTokenOk(token) {
+  if (!config.adminToken || typeof token !== 'string') return false;
+  const a = createHash('sha256').update(token).digest();
+  const b = createHash('sha256').update(config.adminToken).digest();
+  return timingSafeEqual(a, b);
+}
+
+// Quyền quản trị:
+// - Có header Authorization (Bearer): phải là phiên của user có role 'admin'.
+// - Không có Authorization: dùng header x-admin-token so với ADMIN_TOKEN.
+async function requireAdmin(req, reply) {
+  if (req.headers.authorization) {
+    await requireUser(req, reply);
+    if (reply.sent) return;
+    if (req.user.role !== 'admin') return reply.code(403).send({ error: 'forbidden' });
+    return;
+  }
+  if (!adminTokenOk(req.headers['x-admin-token'])) return reply.code(401).send({ error: 'unauthorized' });
+}
+
+// Thêm lượt dịch cho user (dùng khi khách đã thanh toán). Nếu user chưa có key Gemini thì tạo key ngay.
+// Gọi lại với cùng ref sẽ không cộng thêm lượt.
+app.post(
+  '/admin/credits',
+  {
+    preHandler: requireAdmin,
+    schema: {
+      body: {
+        type: 'object',
+        required: ['count'],
+        oneOf: [{ required: ['email'] }, { required: ['user_id'] }],
+        properties: {
+          email: { type: 'string', minLength: 3, maxLength: 320 },
+          user_id: { type: 'integer', minimum: 1 },
+          count: { type: 'integer', minimum: 1, maximum: 100000 },
+          pool: { type: 'string', enum: ['paid', 'free'] },
+          reason: { type: 'string', maxLength: 200 },
+          ref: { type: 'string', minLength: 1, maxLength: 100 },
+        },
+      },
+    },
+  },
+  async (req, reply) => {
+    const { email, user_id, count, pool = 'paid', reason = 'admin', ref } = req.body;
+    const user = user_id ? getUserById(user_id) : getUserByEmail(String(email).toLowerCase());
+    if (!user) return reply.code(404).send({ error: 'user_not_found' });
+
+    const { duplicate } = addCreditsOnce(user.id, count, reason, ref ?? null, pool);
+    const b = getBalances(user.id);
+    const balance = { credits: b.total, credits_free: b.free, credits_paid: b.paid };
+    if (duplicate) return { duplicate: true, ...balance, key: 'unchanged' };
+
+    // Chưa có key thì tạo ngay, không đợi; kết quả trả về trạng thái để theo dõi
+    let key = 'exists';
+    if (!getUserById(user.id).gemini_key) key = provisionKey(user.id, req.log) ? 'creating' : 'skipped';
+    return { duplicate: false, ...balance, key };
+  },
+);
+
 // Trừ lượt dịch trước khi extension gọi Gemini. ref (tuỳ chọn) để gọi lại không bị trừ hai lần.
 app.post(
   '/usage',
@@ -88,7 +149,12 @@ app.post(
   async (req, reply) => {
     const r = consumeCredits(req.user.id, req.body.count, req.body.ref);
     const { ok, duplicate, ...balance } = r; // balance: credits, credits_free, credits_paid
-    if (!ok) return reply.code(402).send({ error: 'insufficient_credits', ...balance });
+    // Không đủ lượt: trả 402. Nếu đã hết hẳn thì xoá key Gemini (DB và Google).
+    // Không xoá khi vừa trừ xong lượt cuối: lô đó vẫn cần key để dịch.
+    if (!ok) {
+      if (balance.credits === 0) revokeKey(req.user.id, req.log).catch(() => {});
+      return reply.code(402).send({ error: 'insufficient_credits', ...balance });
+    }
     return { ...balance, duplicate };
   },
 );

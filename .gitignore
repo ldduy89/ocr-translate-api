@@ -1,2 +1,7 @@
-secrets/
 node_modules/
+data/
+data.txt
+.env
+secrets/
+key.pem
+*.db

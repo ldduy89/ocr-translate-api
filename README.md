@@ -90,3 +90,6 @@ Cách này dựa trên IP nên người dùng dùng VPN vẫn qua được.
   (hoặc đặt `DB_PATH` trỏ vào ổ đó), nếu không dữ liệu mất khi triển khai lại.
 - Gemini key lưu dạng chữ thường trong database và trả về cho chính user đó qua `/me`.
 - Số lượt do extension báo qua `/usage` nên người dùng kỹ thuật có thể bỏ qua bước này (xem ghi chú ở bước tiếp theo).
+
+
+npm run admin -- set-role admin@gmail.com admin
