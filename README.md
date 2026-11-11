@@ -24,6 +24,44 @@ Cần Node.js 20.6 trở lên.
 | POST | `/usage` | Body `{ "count": 1, "ref": "tuỳ chọn" }`. Trừ lượt (dùng lượt miễn phí trước, thiếu mới trừ lượt đã mua); hết lượt trả 402. Cùng `ref` gọi lại không bị trừ hai lần. Trả `{ credits, credits_free, credits_paid, duplicate }` |
 | POST | `/usage/refund` | Body `{ "ref": "...", "count": 1 }`. Hoàn lượt cho lần trừ có `ref` đó (mỗi `ref` hoàn một lần, không quá số đã trừ; hoàn lượt đã mua trước rồi tới lượt miễn phí) |
 
+## Nạp lượt qua VietQR (Transaction Sync)
+
+Server có 2 endpoint để VietQR gọi vào khi có tiền về (khai báo URL này với VietQR):
+
+| Method | Đường dẫn | Việc |
+|---|---|---|
+| POST | `/vqr/api/token_generate` | Basic Auth (`VIETQR_USER`:`VIETQR_PASS`), trả `access_token` Bearer sống `VIETQR_TOKEN_SECONDS` giây (mặc định 300) |
+| POST | `/vqr/bank/api/transaction-sync` | Bearer token ở trên. Nhận giao dịch, cộng lượt |
+
+Đặt trong `.env` (cả hai bắt buộc, thiếu thì endpoint VietQR tắt):
+
+```
+VIETQR_USER=ten-dang-nhap-tu-dat
+VIETQR_PASS=mat-khau-dai-ngau-nhien
+VIETQR_BANK_ACCOUNT=0123456789   # tuỳ chọn: chỉ nhận tiền vào đúng số tài khoản này
+```
+
+Quy tắc: lời nhắn chuyển khoản phải chứa `ho tro <user_id>` (không phân biệt hoa/thường, có dấu hay không), ví dụ
+`ho tro 120435`. `user_id` là cột `id` của user (xem `show`/`/me`). Số tiền phải khớp chính xác:
+
+| Số tiền | Lượt cộng (vào lượt đã mua) |
+|---|---|
+| 20.000đ | 50 |
+| 100.000đ | 300 |
+| 200.000đ | 700 |
+| 500.000đ | 2.000 |
+
+Mọi giao dịch được ghi vào bảng `payments` (khoá `transaction_id`), nên VietQR gửi lại cùng giao dịch cũng không cộng hai lần.
+Giao dịch không tự cộng được (sai số tiền, sai lời nhắn, không có user) có trạng thái `unmatched_amount`, `bad_content`,
+`unknown_user` và vẫn trả thành công cho VietQR; xem và xử lý tay:
+
+```bash
+npm run admin -- payments unmatched_amount
+npm run admin -- add-credits <email> <số_lượt> paid "vqr tay"
+```
+
+Đổi bảng giá ở `PACKAGES` trong `src/vietqr.js`.
+
 ## Hai loại lượt dịch
 
 Số lượt được tách thành **miễn phí** (`free`, tặng khi đăng ký, `FREE_CREDITS` trong `.env`) và **đã mua** (`paid`,

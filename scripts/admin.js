@@ -8,10 +8,11 @@
 //   npm run admin -- add-credits <email> <số_lượt> [free|paid] [lý_do]   (mặc định paid = lượt đã mua)
 //   npm run admin -- create-key <email>     (tạo key Gemini mới, chọn project đang có ít key nhất)
 //   npm run admin -- delete-key <email>     (xoá key của user, kể cả bên Google nếu key do server tạo)
+//   npm run admin -- payments [credited|unmatched_amount|unknown_user|bad_content|ignored]   (giao dịch VietQR gần đây)
 import { readFileSync } from 'node:fs';
 import {
   getUserByEmail, getBalances, setGeminiKey, addCredits, claimGeminiKey, gcpKeyOfUser, deleteGcpKeyRecord,
-  listGcpConfigs, getGcpConfigById, addGcpConfig, setGcpEnabled, removeGcpConfig, gcpKeyCount,
+  listPayments, listGcpConfigs, getGcpConfigById, addGcpConfig, setGcpEnabled, removeGcpConfig, gcpKeyCount,
 } from '../src/db.js';
 import { createGeminiKey, deleteGeminiKey, keysEnabled } from '../src/gkeys.js';
 
@@ -75,6 +76,16 @@ if (GCP_CMDS.includes(cmd)) {
     if (n > 0) fail(`Project ${cfg.gcpProjectId} còn ${n} key đã tạo. Dùng gcp-disable để ngừng tạo key mới, hoặc xoá các key đó trước.`);
     removeGcpConfig(id);
     console.log(`Đã xoá project ${cfg.gcpProjectId}.`);
+  }
+  process.exit(0);
+}
+
+// ---------- Giao dịch VietQR (không cần email) ----------
+if (cmd === 'payments') {
+  const rows = listPayments(emailArg || null, 50);
+  if (!rows.length) console.log('Chưa có giao dịch nào.');
+  for (const r of rows) {
+    console.log({ ...r, created_at: new Date(r.created_at * 1000).toISOString() });
   }
   process.exit(0);
 }

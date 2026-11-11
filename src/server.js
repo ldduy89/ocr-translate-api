@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { signSession, verifySession, verifyGoogleAccessToken } from './auth.js';
 import { blockedCountry } from './region.js';
 import { provisionKey, revokeKey } from './provision.js';
+import vietqrRoutes from './vietqr.js';
 import { upsertUser, getUserById, getUserByEmail, getBalances, consumeCredits, refundCredits, addCreditsOnce, publicUser, listGcpConfigs, getGcpConfigById, addGcpConfig, setGcpEnabled, removeGcpConfig, gcpKeyCount } from './db.js';
 
 if (!config.googleClientId) {
@@ -34,6 +35,13 @@ async function requireUser(req, reply) {
 }
 
 app.get('/health', async () => ({ ok: true }));
+
+// VietQR: 2 endpoint (/vqr/api/token_generate và /vqr/bank/api/transaction-sync) để nhận biến động số dư
+if (config.vietqrUser && config.vietqrPass) {
+  await app.register(vietqrRoutes);
+} else {
+  app.log.warn('Chưa đặt VIETQR_USER / VIETQR_PASS: endpoint VietQR đang tắt');
+}
 
 // Extension gửi access token Google, nhận phiên đăng nhập của server
 app.post(

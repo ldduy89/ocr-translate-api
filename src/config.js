@@ -27,4 +27,10 @@ export const config = {
   gcpImportServiceAccountFile: env.GCP_SA_FILE || '',
   // Header chứa mã quốc gia của người gọi (Cloudflare tự thêm CF-IPCountry khi domain đi qua Cloudflare)
   countryHeader: (env.COUNTRY_HEADER || 'cf-ipcountry').toLowerCase(),
+  // VietQR Transaction Sync: username/password do BẠN đặt và khai báo cho VietQR (họ gọi vào server bạn bằng Basic Auth)
+  vietqrUser: env.VIETQR_USER || '',
+  vietqrPass: env.VIETQR_PASS || '',
+  vietqrTokenSeconds: Number(env.VIETQR_TOKEN_SECONDS || 300),
+  // Tuỳ chọn: chỉ nhận giao dịch vào đúng số tài khoản này (bỏ trống = không kiểm tra)
+  vietqrBankAccount: (env.VIETQR_BANK_ACCOUNT || '').trim(),
 };

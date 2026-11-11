@@ -56,6 +56,20 @@ CREATE TABLE IF NOT EXISTS gcp_keys (
   created_at     INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_gcp_keys_config ON gcp_keys(gcp_config_id);
+
+-- Mọi giao dịch VietQR gửi về (kể cả giao dịch không khớp) để chống cộng trùng và đối soát thủ công
+CREATE TABLE IF NOT EXISTS payments (
+  transaction_id  TEXT PRIMARY KEY,
+  user_id         INTEGER REFERENCES users(id),
+  amount          INTEGER NOT NULL,
+  credits         INTEGER NOT NULL DEFAULT 0,
+  content         TEXT,
+  bank_account    TEXT,
+  reference       TEXT,
+  status          TEXT NOT NULL,   -- credited | unmatched_amount | unknown_user | bad_content | ignored
+  created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
 `);
 
 // Bản cũ chưa tách lượt miễn phí / đã mua: thêm cột pool. Lượt tặng và các lần dùng/hoàn tính vào
@@ -238,6 +252,24 @@ export function addCreditsOnce(userId, n, reason = 'admin', ref = null, pool = '
   addCredits(userId, n, reason, ref, pool);
   return { duplicate: false };
 }
+
+// Ghi một giao dịch VietQR. Cùng transaction_id chỉ xử lý một lần (gọi lại/retry trả duplicate: true).
+// Nếu có credits > 0 thì cộng lượt đã mua trong CÙNG giao dịch SQL, nên không thể cộng mà không ghi nhận hoặc ngược lại.
+const paymentTx = db.transaction((p) => {
+  if (db.prepare('SELECT 1 FROM payments WHERE transaction_id = ?').get(p.transactionId)) return { duplicate: true };
+  db.prepare(
+    'INSERT INTO payments (transaction_id, user_id, amount, credits, content, bank_account, reference, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(p.transactionId, p.userId ?? null, p.amount, p.credits || 0, p.content ?? null, p.bankAccount ?? null, p.reference ?? null, p.status);
+  if (p.status === 'credited' && p.userId && p.credits > 0) {
+    q.insertLedger.run(p.userId, p.credits, 'topup', `vqr:${p.transactionId}`, 'paid');
+  }
+  return { duplicate: false };
+});
+export const recordPayment = (p) => paymentTx.immediate(p);
+export const listPayments = (status, limit = 50) =>
+  status
+    ? db.prepare('SELECT * FROM payments WHERE status = ? ORDER BY created_at DESC LIMIT ?').all(status, limit)
+    : db.prepare('SELECT * FROM payments ORDER BY created_at DESC LIMIT ?').all(limit);
 
 export const setUserRole = (userId, role) => {
   if (role !== 'user' && role !== 'admin') throw new Error("role phải là 'user' hoặc 'admin'");
