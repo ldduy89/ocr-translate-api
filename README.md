@@ -131,3 +131,11 @@ Cách này dựa trên IP nên người dùng dùng VPN vẫn qua được.
 
 
 npm run admin -- set-role admin@gmail.com admin
+
+
+
+backup data on railway
+node -e "require('better-sqlite3')('/data/app.db').backup('/data/backup.db').then(()=>console.log('backup ok'))"
+
+download data on terminal
+railway ssh -- cat /data/backup.db > backup.db
