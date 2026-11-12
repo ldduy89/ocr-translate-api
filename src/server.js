@@ -5,6 +5,7 @@ import { signSession, verifySession, verifyGoogleAccessToken } from './auth.js';
 import { blockedCountry } from './region.js';
 import { provisionKey, revokeKey } from './provision.js';
 import vietqrRoutes from './vietqr.js';
+import { storeNotification, markProcessed, listNotifications, pendingNotifications, getNotification } from './notifications.js';
 import { upsertUser, getUserById, getUserByEmail, getBalances, consumeCredits, refundCredits, addCreditsOnce, publicUser, listGcpConfigs, getGcpConfigById, addGcpConfig, setGcpEnabled, removeGcpConfig, gcpKeyCount } from './db.js';
 
 if (!config.googleClientId) {
@@ -293,6 +294,70 @@ app.post(
     const { ok, error, duplicate, ...balance } = r;
     if (!ok) return reply.code(404).send({ error, ...balance });
     return { ...balance, duplicate };
+  },
+);
+
+
+// ---------- Thông báo biến động số dư (app trên điện thoại gửi lên) ----------
+// Quyền: x-admin-token (ADMIN_TOKEN)
+
+// Lưu thông báo. Trùng thì không lưu lại. should_sync = true nghĩa là app cần gọi transaction-sync.
+app.post(
+  '/admin/notifications',
+  {
+    preHandler: requireAdmin,
+    schema: {
+      body: {
+        type: 'object',
+        required: ['text'],
+        properties: {
+          title: { type: 'string', maxLength: 500 },
+          text: { type: 'string', minLength: 1, maxLength: 4000 },
+        },
+      },
+    },
+  },
+  async (req) => storeNotification(`${req.body.title ?? ''} ${req.body.text}`),
+);
+
+// Danh sách, 10 cái mỗi lần (lazy loading). Lần đầu bỏ qua before; các lần sau truyền next_cursor làm before.
+app.get(
+  '/admin/notifications',
+  {
+    preHandler: requireAdmin,
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 50, default: 10 },
+          before: { type: 'integer', minimum: 1 },
+        },
+      },
+    },
+  },
+  async (req) => listNotifications(req.query.limit ?? 10, req.query.before ?? null),
+);
+
+// Các thông báo chưa xử lý (app dùng để thử lại)
+app.get('/admin/notifications/pending', { preHandler: requireAdmin }, async () => pendingNotifications(20));
+
+// Báo kết quả gọi API. ok = true sẽ đặt cờ đã xử lý, ok = false ghi lỗi để thử lại sau.
+app.post(
+  '/admin/notifications/:id/processed',
+  {
+    preHandler: requireAdmin,
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'integer', minimum: 1 } } },
+      body: {
+        type: 'object',
+        required: ['ok'],
+        properties: { ok: { type: 'boolean' }, error: { type: 'string', maxLength: 500 } },
+      },
+    },
+  },
+  async (req, reply) => {
+    if (!getNotification(req.params.id)) return reply.code(404).send({ error: 'not_found' });
+    return markProcessed(req.params.id, req.body.ok, req.body.error);
   },
 );
 
