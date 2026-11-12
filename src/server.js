@@ -5,7 +5,8 @@ import { signSession, verifySession, verifyGoogleAccessToken } from './auth.js';
 import { blockedCountry } from './region.js';
 import { provisionKey, revokeKey } from './provision.js';
 import vietqrRoutes from './vietqr.js';
-import { storeNotification, markProcessed, listNotifications, pendingNotifications, getNotification } from './notifications.js';
+import { storeNotification, releaseNotification, listNotifications, pendingNotifications, getNotification } from './notifications.js';
+import { processNotification, startWorker } from './forward.js';
 import { upsertUser, getUserById, getUserByEmail, getBalances, consumeCredits, refundCredits, addCreditsOnce, publicUser, listGcpConfigs, getGcpConfigById, addGcpConfig, setGcpEnabled, removeGcpConfig, gcpKeyCount } from './db.js';
 
 if (!config.googleClientId) {
@@ -301,7 +302,7 @@ app.post(
 // ---------- Thông báo biến động số dư (app trên điện thoại gửi lên) ----------
 // Quyền: x-admin-token (ADMIN_TOKEN)
 
-// Lưu thông báo. Trùng thì không lưu lại. should_sync = true nghĩa là app cần gọi transaction-sync.
+// Lưu thông báo và để server xử lý (token + transaction-sync). Trùng thì không xử lý lại.
 app.post(
   '/admin/notifications',
   {
@@ -317,7 +318,14 @@ app.post(
       },
     },
   },
-  async (req) => storeNotification(`${req.body.title ?? ''} ${req.body.text}`),
+  async (req) => {
+    const r = storeNotification(`${req.body.title ?? ''} ${req.body.text}`);
+    // Có thông báo tiền vào chưa xử lý: server tự gọi VietQR ở nền
+    if (r.stored && r.should_sync) {
+      processNotification(r.notification.id, app.log).catch((err) => app.log.error(err));
+    }
+    return r;
+  },
 );
 
 // Danh sách, 10 cái mỗi lần (lazy loading). Lần đầu bỏ qua before; các lần sau truyền next_cursor làm before.
@@ -341,25 +349,22 @@ app.get(
 // Các thông báo chưa xử lý (app dùng để thử lại)
 app.get('/admin/notifications/pending', { preHandler: requireAdmin }, async () => pendingNotifications(20));
 
-// Báo kết quả gọi API. ok = true sẽ đặt cờ đã xử lý, ok = false ghi lỗi để thử lại sau.
+// Admin mở lại thông báo bị kẹt (unknown) sau khi kiểm tra bảng payments
 app.post(
-  '/admin/notifications/:id/processed',
+  '/admin/notifications/:id/release',
   {
     preHandler: requireAdmin,
-    schema: {
-      params: { type: 'object', required: ['id'], properties: { id: { type: 'integer', minimum: 1 } } },
-      body: {
-        type: 'object',
-        required: ['ok'],
-        properties: { ok: { type: 'boolean' }, error: { type: 'string', maxLength: 500 } },
-      },
-    },
+    schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'integer', minimum: 1 } } } },
   },
   async (req, reply) => {
-    if (!getNotification(req.params.id)) return reply.code(404).send({ error: 'not_found' });
-    return markProcessed(req.params.id, req.body.ok, req.body.error);
+    const r = releaseNotification(req.params.id);
+    if (!r) return reply.code(404).send({ error: 'not_found' });
+    return r;
   },
 );
+
+// Worker: gọi lại các thông báo chưa xử lý định kỳ
+startWorker(app.log);
 
 app.listen({ port: config.port, host: '0.0.0.0' }).catch((err) => {
   app.log.error(err);
