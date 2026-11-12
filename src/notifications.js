@@ -58,6 +58,7 @@ const q = {
 
 const view = (r) => ({
   id: r.id,
+  raw_content: r.raw_text,
   amount: r.amount,
   content: r.content,
   reference: r.reference,
