@@ -95,62 +95,71 @@ export default async function vietqrRoutes(app) {
     const m = /^Bearer (.+)$/i.exec(req.headers.authorization || '');
     if (!m || !verifyVietqrToken(m[1])) return fail(reply, 401, 'INVALID_TOKEN', 'Unauthorized');
 
-    const b = req.body && typeof req.body === 'object' ? req.body : {};
-    const transactionId = String(b.transactionid ?? '').trim() || String(b.referencenumber ?? '').trim();
-    const amount = Number(b.amount);
-    if (!transactionId || !Number.isFinite(amount) || amount <= 0) {
-      return fail(reply, 400, 'INVALID_PAYLOAD', 'Thiếu transactionid hoặc amount không hợp lệ');
-    }
-
-    const ack = (note) => ({
-      error: false,
-      errorReason: null,
-      toastMessage: note || 'Success',
-      object: { reftransactionid: transactionId },
-    });
-
-    const base = {
-      transactionId,
-      amount: Math.round(amount),
-      content: String(b.content ?? '').slice(0, 300),
-      bankAccount: String(b.bankaccount ?? '').slice(0, 50),
-      reference: String(b.referencenumber ?? '').slice(0, 100),
-    };
-
+    let r;
     try {
-      // Chỉ xử lý tiền VÀO. Giao dịch ghi nợ (D) hoặc sai tài khoản nhận thì ghi nhận rồi bỏ qua
-      // (trả thành công để VietQR không gửi lại một giao dịch mà ta không bao giờ xử lý).
-      const wrongAccount = config.vietqrBankAccount && base.bankAccount && base.bankAccount !== config.vietqrBankAccount;
-      if ((b.transType && b.transType !== 'C') || wrongAccount) {
-        recordPayment({ ...base, status: 'ignored' });
-        return ack();
-      }
-
-      const userId = parseUserId(base.content);
-      const credits = creditsForAmount(base.amount);
-
-      let status = 'credited';
-      let user = null;
-      if (!userId) status = 'bad_content';
-      else if (!(user = getUserById(userId))) status = 'unknown_user';
-      else if (!credits) status = 'unmatched_amount';
-
-      const r = recordPayment({ ...base, userId: user?.id, credits: status === 'credited' ? credits : 0, status });
-      if (r.duplicate) return ack('Duplicate');
-
-      if (status === 'credited') {
-        req.log.info({ transactionId, userId: user.id, amount: base.amount, credits }, 'đã cộng lượt dịch');
-        // Giống /admin/credits: user chưa có key Gemini thì tạo ngay (không đợi)
-        if (!user.gemini_key && getBalance(user.id) > 0) provisionKey(user.id, req.log);
-      } else {
-        // Cần xem tay: tiền đã vào nhưng không tự cộng được lượt (xem: npm run admin -- payments <status>)
-        req.log.warn({ transactionId, status, amount: base.amount, content: base.content }, 'giao dịch VietQR không khớp');
-      }
-      return ack();
+      r = applyTransaction(req.body && typeof req.body === 'object' ? req.body : {}, req.log);
     } catch (err) {
       // Lỗi hệ thống (DB...): trả lỗi để VietQR retry. Cần thống nhất với VietQR mã lỗi nào được retry.
-      req.log.error({ err: err.message, transactionId }, 'xử lý giao dịch VietQR lỗi');
+      req.log.error({ err: err.message }, 'xử lý giao dịch VietQR lỗi');
       return fail(reply, 500, 'SERVER_ERROR', 'Internal error');
     }
+    if (r.invalid) return fail(reply, 400, 'INVALID_PAYLOAD', r.invalid);
+    return ack(r.transactionId, r.note);
   });
+}
+
+export const ack = (transactionId, note) => ({
+  error: false,
+  errorReason: null,
+  toastMessage: note || 'Success',
+  object: { reftransactionid: transactionId },
+});
+
+// Xử lý một giao dịch tiền về (nội dung của transaction-sync). Dùng chung cho endpoint VietQR
+// và cho luồng thông báo trên server, nên không cần gọi HTTP vòng lại.
+// Trả { transactionId, note? } hoặc { invalid: 'lý do' }. Ném lỗi nếu lỗi hệ thống (DB), khi đó chưa ghi gì.
+export function applyTransaction(b, log = console) {
+  const transactionId = String(b.transactionid ?? '').trim() || String(b.referencenumber ?? '').trim();
+  const amount = Number(b.amount);
+  if (!transactionId || !Number.isFinite(amount) || amount <= 0) {
+    return { invalid: 'Thiếu transactionid hoặc amount không hợp lệ' };
+  }
+
+  const base = {
+    transactionId,
+    amount: Math.round(amount),
+    content: String(b.content ?? '').slice(0, 300),
+    bankAccount: String(b.bankaccount ?? '').slice(0, 50),
+    reference: String(b.referencenumber ?? '').slice(0, 100),
+  };
+
+  // Chỉ xử lý tiền VÀO. Giao dịch ghi nợ (D) hoặc sai tài khoản nhận thì ghi nhận rồi bỏ qua
+  // (trả thành công để VietQR không gửi lại một giao dịch mà ta không bao giờ xử lý).
+  const wrongAccount = config.vietqrBankAccount && base.bankAccount && base.bankAccount !== config.vietqrBankAccount;
+  if ((b.transType && b.transType !== 'C') || wrongAccount) {
+    recordPayment({ ...base, status: 'ignored' });
+    return { transactionId };
+  }
+
+  const userId = parseUserId(base.content);
+  const credits = creditsForAmount(base.amount);
+
+  let status = 'credited';
+  let user = null;
+  if (!userId) status = 'bad_content';
+  else if (!(user = getUserById(userId))) status = 'unknown_user';
+  else if (!credits) status = 'unmatched_amount';
+
+  const r = recordPayment({ ...base, userId: user?.id, credits: status === 'credited' ? credits : 0, status });
+  if (r.duplicate) return { transactionId, note: 'Duplicate' };
+
+  if (status === 'credited') {
+    log.info?.({ transactionId, userId: user.id, amount: base.amount, credits }, 'đã cộng lượt dịch');
+    // Giống /admin/credits: user chưa có key Gemini thì tạo ngay (không đợi)
+    if (!user.gemini_key && getBalance(user.id) > 0) provisionKey(user.id, log);
+  } else {
+    // Cần xem tay: tiền đã vào nhưng không tự cộng được lượt (xem: npm run admin -- payments <status>)
+    log.warn?.({ transactionId, status, amount: base.amount, content: base.content }, 'giao dịch VietQR không khớp');
+  }
+  return { transactionId };
 }

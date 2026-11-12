@@ -33,4 +33,7 @@ export const config = {
   vietqrTokenSeconds: Number(env.VIETQR_TOKEN_SECONDS || 300),
   // Tuỳ chọn: chỉ nhận giao dịch vào đúng số tài khoản này (bỏ trống = không kiểm tra)
   vietqrBankAccount: (env.VIETQR_BANK_ACCOUNT || '').trim(),
+  // Số tài khoản nhận cho thông báo tiền vào (xử lý ngay trên server)
+  vqrBankAccount: (env.VQR_BANK_ACCOUNT || '').trim(),
+  vqrWorkerSeconds: Number(env.VQR_WORKER_SECONDS || 60),
 };
