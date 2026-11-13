@@ -139,3 +139,14 @@ node -e "require('better-sqlite3')('/data/app.db').backup('/data/backup.db').the
 
 download data on terminal
 railway ssh -- cat /data/backup.db > backup.db
+
+check data
+railway ssh -- du -sh /data.
+
+delete backup
+railway ssh -- rm /data/backup.dbrailway ssh -- rm /data/backup.db
+
+tạo bk, tải xuống, và xoá
+railway ssh -- node -e "require('better-sqlite3')('/data/app.db').backup('/data/backup.db').then(()=>console.log('backup ok'))"
+railway ssh -- cat /data/backup.db > backup.db
+railway ssh -- rm /data/backup.db
